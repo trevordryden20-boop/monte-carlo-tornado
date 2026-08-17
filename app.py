@@ -153,15 +153,3 @@ with col2:
         mean_speed = np.mean(results)
         ci_lower = np.percentile(results, 2.5)
         ci_upper = np.percentile(results, 97.5)
-
-
-        # EF Rating Estimator based on 3-second gust thresholds
-        def get_ef_rating(speed):
-            if speed < 86:
-                return "EF-0"
-            elif speed < 111:
-                return "EF-1"
-            elif speed < 136:
-                return "EF-2"
-            elif speed < 166:
- 
