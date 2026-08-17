@@ -4,163 +4,103 @@ import streamlit as st
 
 # Page Configuration
 st.set_page_config(
-    page_title="TorForensics Advanced Trajectory Estimator",
+    page_title="TorForensics Advanced Estimator",
     page_icon="🌪️",
-    layout="wide",
+    layout="wide"
 )
 
-st.title(
-    "🌪️ TorForensics: Advanced 3D Trajectory & Lofting Wind Speed Estimator"
-)
-st.markdown(
-    "Advanced forensic model accounting for aerodynamic lift, transition to projectile flight, and heavy object dispersion."
-)
+st.title("🌪️ TorForensics: Advanced 3D Trajectory & Lofting Estimator")
+st.markdown("A robust forensic engineering dashboard modeling heavy asset sliding, rolling resistance, and ballistic lofting dynamics.")
 
-# Sidebar: Advanced Parameters
-st.sidebar.header("Object & Event Parameters")
+# Sidebar parameters
+st.sidebar.header("Asset & Event Parameters")
 
-object_category = st.sidebar.selectbox(
-    "Select Heavy Object",
+asset_type = st.sidebar.selectbox(
+    "Select Asset Template",
     [
         "Industrial Oil Tanker / Storage Cylinder",
         "Commercial Semi-Truck",
-        "Residential Structure / Roof Section",
-        "Custom Heavy Asset",
-    ],
+        "Residential Roof Section",
+        "Custom Heavy Asset"
+    ]
 )
 
-if object_category == "Industrial Oil Tanker / Storage Cylinder":
-  default_mass, default_cd, default_area, default_friction = (
-      18000.0,
-      0.48,
-      16.0,
-      0.35,
-  )
-elif object_category == "Commercial Semi-Truck":
-  default_mass, default_cd, default_area, default_friction = (
-      14000.0,
-      0.80,
-      10.0,
-      0.04,
-  )
-elif object_category == "Residential Structure / Roof Section":
-  default_mass, default_cd, default_area, default_friction = (
-      5000.0,
-      1.25,
-      30.0,
-      0.20,
-  )
+if asset_type == "Industrial Oil Tanker / Storage Cylinder":
+    def_mass, def_cd, def_area, def_friction = 18000.0, 0.48, 16.0, 0.35
+elif asset_type == "Commercial Semi-Truck":
+    def_mass, def_cd, def_area, def_friction = 14000.0, 0.80, 10.0, 0.04
+elif asset_type == "Residential Roof Section":
+    def_mass, def_cd, def_area, def_friction = 5000.0, 1.25, 30.0, 0.20
 else:
-  default_mass, default_cd, default_area, default_friction = (
-      1000.0,
-      0.50,
-      5.0,
-      0.10,
-  )
+    def_mass, def_cd, def_area, def_friction = 1000.0, 0.50, 5.0, 0.10
 
-mass = st.sidebar.number_input("Object Mass (kg)", value=default_mass, step=500.0)
-cd = st.sidebar.number_input(
-    "Aerodynamic Drag Coefficient (Cd)", value=default_cd, step=0.01
-)
-area = st.sidebar.number_input(
-    "Projected Surface Area (m²)", value=default_area, step=1.0
-)
-friction = st.sidebar.number_input(
-    "Ground Friction / Slide Resistance (mu)", value=default_friction, step=0.01
-)
-target_distance = st.sidebar.slider(
-    "Observed Throw Distance (meters)",
-    min_value=10.0,
-    max_value=1000.0,
-    value=250.0,
-    step=10.0,
-)
+mass = st.sidebar.number_input("Asset Mass (kg)", value=def_mass, step=500.0)
+cd = st.sidebar.number_input("Aerodynamic Drag Coefficient (Cd)", value=def_cd, step=0.01)
+area = st.sidebar.number_input("Projected Surface Area (m²)", value=def_area, step=1.0)
+friction = st.sidebar.number_input("Ground Friction / Slide Resistance (mu)", value=def_friction, step=0.01)
+displacement = st.sidebar.slider("Measured Displacement / Throw Distance (m)", min_value=10.0, max_value=1000.0, value=250.0, step=10.0)
 
 st.sidebar.markdown("---")
-num_iterations = st.sidebar.selectbox(
-    "Monte Carlo Iterations", [10000, 50000, 100000], index=1
-)
+iterations = st.sidebar.selectbox("Monte Carlo Iterations", [10000, 50000, 100000], index=1)
+uncertainty = st.sidebar.slider("Parameter Uncertainty (%)", min_value=5, max_value=30, value=15)
 
-# Main Execution Logic
+# Main Layout
 col1, col2 = st.columns([1, 1])
 
 with col1:
-  st.subheader("⚙️ Simulation Engine")
-  st.markdown(
-      "Computes the stochastic balance between sliding thresholds and"
-      " full-flight ballistic lofting."
-  )
+    st.subheader("⚙️ Stochastic Simulation Engine")
+    st.markdown("Click below to compute the probabilistic velocity profile required to displace or loft heavy assets.")
 
-  if st.button("Run Advanced Trajectory Analysis", type="primary"):
-    with st.spinner("Simulating multi-vector wind fields and flight paths..."):
-      rho = 1.225  # Air density kg/m^3
-      g = 9.81  # Gravity m/s^2
-
-      # Stochastic variations across parameters (15% uncertainty)
-      sim_mass = np.random.normal(mass, mass * 0.15, num_iterations)
-      sim_cd = np.random.normal(cd, cd * 0.15, num_iterations)
-      sim_area = np.random.normal(area, area * 0.10, num_iterations)
-      sim_friction = np.random.normal(
-          friction, friction * 0.20, num_iterations
-      )
-
-      # Ensure strict physical boundaries
-      sim_mass = np.clip(sim_mass, 100.0, None)
-      sim_cd = np.clip(sim_cd, 0.1, 2.5)
-
-      # Ballistic and aerodynamic range modeling for lofted heavy objects
-      # Utilizing inverted projectile range approximation driven by wind drag momentum transfer
-      # V_wind estimation based on required kinetic energy to throw mass distance D
-      launch_angle = np.random.uniform(
-          np.radians(25), np.radians(55), num_iterations
-      )
-      
-      # Derived wind velocity vector required to achieve observed throw distance via lofting/rolling
-      # Simplified ballistic range equation inversion with aerodynamic drag correction factor
-      air_resistance_factor = 1.0 + (sim_cd * sim_area) / (2.0 * sim_mass)
-      required_velocity_ms = np.sqrt(
-          (target_distance * g * air_resistance_factor)
-          / np.sin(2.0 * launch_angle)
-      )
-
-      # Convert to mph
-      simulated_speeds_mph = required_velocity_ms * 2.23694
-
-      st.session_state["advanced_results"] = simulated_speeds_mph
-      st.success("Trajectory Analysis Complete!")
+    if st.button("Run Forensic Simulation", type="primary"):
+        with st.spinner("Processing trajectory and force vectors..."):
+            rho = 1.225
+            g = 9.81
+            
+            noise = uncertainty / 100.0
+            sim_mass = np.random.normal(mass, mass * noise * 0.5, iterations)
+            sim_cd = np.random.normal(cd, cd * noise, iterations)
+            sim_area = np.random.normal(area, area * noise, iterations)
+            sim_friction = np.random.normal(friction, friction * noise, iterations)
+            
+            sim_mass = np.clip(sim_mass, 50.0, None)
+            sim_cd = np.clip(sim_cd, 0.1, 3.0)
+            
+            # Combined rolling/sliding + ballistic lofting estimation model
+            launch_angle = np.random.uniform(np.radians(20), np.radians(60), iterations)
+            air_factor = 1.0 + (sim_cd * sim_area) / (2.0 * sim_mass)
+            
+            # Inverted range formula accounting for drag momentum transfer
+            vel_ms = np.sqrt((displacement * g * air_factor) / np.sin(2.0 * launch_angle))
+            vel_mph = vel_ms * 2.23694
+            
+            st.session_state['results'] = vel_mph
+            st.success("Simulation Executed Successfully!")
 
 with col2:
-  st.subheader("🎯 Forensic Wind Speed Results")
-  if "advanced_results" in st.session_state:
-    results = st.session_state["advanced_results"]
-    mean_speed = np.mean(results)
-    ci_lower = np.percentile(results, 2.5)
-    ci_upper = np.percentile(results, 97.5)
+    st.subheader("🎯 Forensic Wind Speed Results")
+    if 'results' in st.session_state:
+        res = st.session_state['results']
+        mean_v = np.mean(res)
+        ci_low = np.percentile(res, 2.5)
+        ci_high = np.percentile(res, 97.5)
+        
+        def get_ef(v):
+            if v < 86: return "EF-0"
+            elif v < 111: return "EF-1"
+            elif v < 136: return "EF-2"
+            elif v < 166: return "EF-3"
+            elif v < 200: return "EF-4"
+            else: return "EF-5"
+            
+        st.metric(label="Estimated Mean Peak Wind Speed", value=f"{mean_v:.1f} mph")
+        st.metric(label="95% Confidence Interval", value=f"{ci_low:.1f} mph – {ci_high:.1f} mph")
+        st.metric(label="Estimated EF-Scale Rating", value=get_ef(mean_v))
+    else:
+        st.info("Run the simulation to generate wind speed outputs.")
 
-
-    def get_ef_rating(speed):
-      if speed < 86:
-        return "EF-0"
-      elif speed < 111:
-        return "EF-1"
-      elif speed < 136:
-        return "EF-2"
-      elif speed < 166:
-        return "EF-3"
-      elif speed < 200:
-        return "EF-4"
-      else:
-        return "EF-5"
-
-
-    st.metric(
-        label="Estimated Peak Wind Speed (Trajectory Model)",
-        value=f"{mean_speed:.1f} mph",
-    )
-    st.metric(
-        label="95% Confidence Interval",
-        value=f"{ci_lower:.1f} mph – {ci_upper:.1f} mph",
-    )
-    st.metric(label="Implied EF-Rating", value=get_ef_rating(mean_speed))
-  else:
-    st.info("Click the button to run the advanced trajectory si
+if 'results' in st.session_state:
+    st.markdown("---")
+    st.subheader("📈 Velocity Probability Distribution")
+    hist, bins = np.histogram(st.session_state['results'], bins=40)
+    df_chart = pd.DataFrame({"Frequency": hist}, index=np.round(bins[:-1], 1))
+    st.line_chart(df_chart)
