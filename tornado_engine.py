@@ -1,119 +1,146 @@
+import streamlit as st
 import numpy as np
+import plotly.graph_objects as go
 from scipy.optimize import minimize
 
-class AdvancedRankineTornadoEngine:
-    def __init__(self, core_radius_m=80.0, trans_speed_m_s=12.0, 
-                 heading_deg=0.0, alpha=0.6, inflow_ratio=0.3, air_density=1.225):
-        """
-        :param core_radius_m: Radius of maximum winds (r_c) in meters
-        :param trans_speed_m_s: Forward translation speed of tornado center in m/s
-        :param heading_deg: Translation heading (0 = North, 90 = East)
-        :param alpha: Modified Rankine decay parameter (0.5 to 0.75)
-        :param inflow_ratio: Ratio of radial velocity to tangential velocity
-        :param air_density: Air density in kg/m^3
-        """
-        self.r_c = core_radius_m
-        self.v_t = trans_speed_m_s
-        self.heading_rad = np.radians(heading_deg)
-        self.alpha = alpha
-        self.inflow_ratio = inflow_ratio
-        self.rho = air_density
+st.set_page_config(page_title="Rankine Object Displacement Inversion Engine", layout="wide")
 
-    def velocity_vector_field(self, x, y, x0, y0, v_max):
-        """Calculates 2D vector wind components (u, v) at coordinates (x, y)."""
-        dx = x - x0
-        dy = y - y0
-        r = np.hypot(dx, dy)
-        theta = np.arctan2(dy, dx)
+# Map qualitative motion modes to numeric severity tiers for optimization
+MODE_MAP = {
+    "Stationary": 0,
+    "Rolled / Slid": 1,
+    "Bounced / Tumbling": 2,
+    "Lofted / Airborne": 3
+}
+REVERSE_MODE_MAP = {v: k for k, v in MODE_MAP.items()}
 
-        if r == 0:
-            return 0.0, 0.0
+class RankineDisplacementEngine:
+    def __init__(self, r_c=80.0, v_t=14.0, heading=45.0, alpha=0.65, inflow=0.25, rho=1.225):
+        self.r_c, self.v_t, self.head, self.alpha, self.inflow, self.rho = (
+            r_c, v_t, np.radians(heading), alpha, inflow, rho
+        )
 
-        # Modified Rankine tangential speed
-        if r <= self.r_c:
-            v_theta = v_max * (r / self.r_c)
+    def _field(self, x, y, x0, y0, v_max):
+        """Calculates 2D velocity magnitude at (x, y) relative to center (x0, y0)."""
+        dx, dy = x - x0, y - y0
+        r, theta = np.hypot(dx, dy), np.arctan2(dy, dx)
+        v_th = np.where(r <= self.r_c, v_max * (r / self.r_c), v_max * ((self.r_c / np.maximum(r, 1e-5)) ** self.alpha))
+        v_r = -self.inflow * v_th
+        u = v_r * np.cos(theta) - v_th * np.sin(theta) + self.v_t * np.sin(self.head)
+        v = v_r * np.sin(theta) + v_th * np.cos(theta) + self.v_t * np.cos(self.head)
+        return np.hypot(u, v)
+
+    def evaluate_displacement(self, v_ms, mass_kg=1500.0, area_m2=4.0, cd=0.8, cl=0.4, mu=0.6):
+        """Maps local wind speed to physical heavy object motion mode."""
+        q = 0.5 * self.rho * (v_ms ** 2)
+        f_drag = q * cd * area_m2
+        f_lift = q * cl * area_m2
+        weight = mass_kg * 9.81
+        
+        net_weight = max(0.0, weight - f_lift)
+        f_friction = mu * net_weight
+        
+        # Determine continuous state variable based on forces
+        if f_lift >= weight:
+            return 3.0  # Lofted / Airborne
+        elif f_drag > f_friction and f_lift > (weight * 0.5):
+            return 2.0  # Bounced / Tumbling
+        elif f_drag > f_friction:
+            return 1.0  # Rolled / Slid
         else:
-            v_theta = v_max * ((self.r_c / r) ** self.alpha)
+            return 0.0  # Stationary
 
-        # Radial velocity (inward)
-        v_r = -self.inflow_ratio * v_theta
-
-        # Polar to Cartesian conversion
-        u_rot = v_r * np.cos(theta) - v_theta * np.sin(theta)
-        v_rot = v_r * np.sin(theta) + v_theta * np.cos(theta)
-
-        # Translational addition
-        u_trans = self.v_t * np.sin(self.heading_rad)
-        v_trans = self.v_t * np.cos(self.heading_rad)
-
-        return u_rot + u_trans, v_rot + v_trans
-
-    def get_peak_wind_and_pressure(self, x, y, x0, y0, v_max):
-        """Returns peak velocity magnitude and dynamic pressure at (x,y)."""
-        u, v = self.velocity_vector_field(x, y, x0, y0, v_max)
-        v_mag = np.hypot(u, v)
-        dynamic_pressure = 0.5 * self.rho * (v_mag ** 2)
-        return v_mag, dynamic_pressure
-
-    def physical_damage_model(self, dynamic_pressure_pa, failure_pressure_pa=3500.0, shape_k=3.0):
-        """Maps dynamic wind pressure (Pa) to structural damage index (0.0 to 1.0)."""
-        if dynamic_pressure_pa <= 0:
-            return 0.0
-        return 1.0 - np.exp(- (dynamic_pressure_pa / failure_pressure_pa) ** shape_k)
-
-    def estimate_v_max_multi_point(self, observations):
-        """Solves for peak core wind speed and center offset given survey points."""
-        def loss_function(params):
+    def invert(self, obs):
+        """Inverts core v_max to match observed heavy object displacement modes."""
+        ox = np.array([p['x'] for p in obs])
+        oy = np.array([p['y'] for p in obs])
+        target_modes = np.array([MODE_MAP[p['observed_mode']] for p in obs])
+        
+        def loss(params):
             v_max_cand, x0_cand, y0_cand = params
-            total_error = 0.0
+            v_mags = self._field(ox, oy, x0_cand, y0_cand, v_max_cand)
+            
+            sim_modes = np.array([
+                self.evaluate_displacement(v, p.get('mass', 1500.0), p.get('area', 4.0)) 
+                for v, p in zip(v_mags, obs)
+            ])
+            
+            return np.mean((sim_modes - target_modes) ** 2)
 
-            for obs in observations:
-                _, q = self.get_peak_wind_and_pressure(obs['x'], obs['y'], x0_cand, y0_cand, v_max_cand)
-                sim_damage = self.physical_damage_model(q)
-                total_error += (sim_damage - obs['observed_damage']) ** 2
+        res = minimize(loss, [60.0, 0.0, 0.0], bounds=[(20, 160), (-500, 500), (-500, 500)], method='L-BFGS-B')
+        return {'v_max': res.x[0], 'center': res.x[1:], 'mse': res.fun}
 
-            return total_error / len(observations)
+# --- Sidebar Controls ---
+st.sidebar.title("🌪️ Vortex Physics")
+r_c = st.sidebar.slider("Core Radius (r_c) [m]", 20.0, 200.0, 80.0)
+v_t = st.sidebar.slider("Translation Speed [m/s]", 0.0, 30.0, 14.0)
+head = st.sidebar.slider("Heading Angle (°)", 0, 360, 45)
+alpha = st.sidebar.slider("Decay Exponent (α)", 0.3, 1.0, 0.65)
+inflow = st.sidebar.slider("Inflow Ratio", 0.0, 0.6, 0.25)
 
-        # Initial parameter guesses: [v_max, center_x, center_y]
-        initial_guess = [60.0, 0.0, 0.0]
-        bounds = [(20.0, 160.0), (-500.0, 500.0), (-500.0, 500.0)]
+engine = RankineDisplacementEngine(r_c, v_t, head, alpha, inflow)
 
-        res = minimize(loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
+# --- App Interface ---
+st.title("🚜 Heavy Object Displacement Inversion Engine")
+st.caption("Solves for core tornado winds by iteratively fitting physical drag/lift displacement modes (Slid, Bounced, Lofted).")
 
-        if res.success:
-            return {
-                'v_max_m_s': res.x[0],
-                'v_max_mph': res.x[0] * 2.23694,
-                'estimated_center': (res.x[1], res.x[2]),
-                'mse_loss': res.fun
-            }
-        else:
-            raise RuntimeError("Optimizer failed to find a valid fit.")
+col_table, col_fig = st.columns([1, 2])
 
-# --- Running a custom simulation ---
-if __name__ == "__main__":
-    # 1. Initialize engine with storm parameters
-    engine = AdvancedRankineTornadoEngine(
-        core_radius_m=90.0,   # Core width in meters
-        trans_speed_m_s=14.0, # Tornado motion speed in m/s
-        heading_deg=45.0,     # Moving Northeast (45 degrees)
-        alpha=0.65,           # Decay rate outside core
-        inflow_ratio=0.25     # Inward flow intensity
+default_survey = [
+    {'x': -120.0, 'y': 50.0,  'observed_mode': 'Lofted / Airborne', 'mass': 1500.0, 'area': 4.0},
+    {'x': 150.0,  'y': -30.0, 'observed_mode': 'Rolled / Slid',      'mass': 1500.0, 'area': 4.0},
+    {'x': 80.0,   'y': 90.0,  'observed_mode': 'Bounced / Tumbling', 'mass': 1500.0, 'area': 4.0},
+    {'x': -250.0, 'y': -100.0,'observed_mode': 'Stationary',         'mass': 1500.0, 'area': 4.0},
+]
+
+with col_table:
+    st.subheader("Field Observations")
+    survey = st.data_editor(
+        default_survey,
+        num_rows="dynamic",
+        column_config={
+            "x": st.column_config.NumberColumn("X (m)"),
+            "y": st.column_config.NumberColumn("Y (m)"),
+            "observed_mode": st.column_config.SelectboxColumn("Observed Displacement", options=list(MODE_MAP.keys())),
+            "mass": st.column_config.NumberColumn("Mass (kg)", default=1500.0),
+            "area": st.column_config.NumberColumn("Area (m²)", default=4.0)
+        }
     )
 
-    # 2. Input damage survey coordinates (X, Y in meters relative to estimated track)
-    # observed_damage ranges from 0.0 (no damage) to 1.0 (complete destruction)
-    field_data = [
-        {'x': -120.0, 'y': 50.0,  'observed_damage': 0.88},
-        {'x': 150.0,  'y': -30.0, 'observed_damage': 0.35},
-        {'x': 80.0,   'y': 90.0,  'observed_damage': 0.95},
-        {'x': -200.0, 'y': -100.0,'observed_damage': 0.12},
-    ]
+if len(survey) > 0:
+    res = engine.invert(survey)
+    
+    with col_table:
+        st.markdown("---")
+        st.metric("Estimated Peak Wind", f"{res['v_max'] * 2.237:.1f} mph", f"{res['v_max']:.1f} m/s")
+        st.metric("Inferred Vortex Center", f"({res['center'][0]:.1f}, {res['center'][1]:.1f}) m")
+        st.metric("Displacement Fit MSE Loss", f"{res['mse']:.6f}")
 
-    # 3. Solve for maximum wind speed
-    output = engine.estimate_v_max_multi_point(field_data)
+    with col_fig:
+        # Generate Grid & Plot Field
+        x_g = y_g = np.linspace(-300, 300, 45)
+        X, Y = np.meshgrid(x_g, y_g)
+        Z_mph = engine._field(X, Y, res['center'][0], res['center'][1], res['v_max']) * 2.23694
 
-    print("=== ESTIMATION RESULTS ===")
-    print(f"Max Core Wind Speed : {output['v_max_m_s']:.2f} m/s ({output['v_max_mph']:.1f} mph)")
-    print(f"Center Position Offset: X={output['estimated_center'][0]:.1f}m, Y={output['estimated_center'][1]:.1f}m")
-    print(f"Model Fit Loss (MSE)  : {output['mse_loss']:.6f}")
+        fig = go.Figure()
+        fig.add_trace(go.Heatmap(x=x_g, y=y_g, z=Z_mph, colorscale="Viridis", colorbar=dict(title="mph")))
+        
+        # Plot survey markers
+        fig.add_trace(go.Scatter(
+            x=[p['x'] for p in survey], y=[p['y'] for p in survey], 
+            mode="markers+text",
+            text=[p['observed_mode'].split()[0] for p in survey],
+            textposition="top center",
+            marker=dict(size=12, color="red", symbol="x"),
+            name="Field Objects"
+        ))
+        
+        # Plot inferred core center
+        fig.add_trace(go.Scatter(
+            x=[res['center'][0]], y=[res['center'][1]],
+            mode="markers", marker=dict(size=14, color="yellow", symbol="star"),
+            name="Inferred Center"
+        ))
+        
+        fig.update_layout(template="plotly_dark", height=580, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
